@@ -60,13 +60,13 @@
   .r { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 4px; flex: 1; min-height: 0;
        padding: 1px 0; border-bottom: 1px solid #e6e9df; }
   .r:last-child { border-bottom: 0; }
-  .half { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0 6px; border-radius: 4px; }
+  .half { display: flex; align-items: center; gap: 4px; min-width: 0; padding: 0 6px; border-radius: 4px; }
   .half.b { flex-direction: row-reverse; }  /* mirror: projection and score towards the centre */
   .half .nm { flex: 1; display: flex; align-items: baseline; min-width: 0; font-size: 1.05em; }  /* position | name (shrinks) | number */
   .half.b .nm { justify-content: flex-end; }
-  .half b { position: relative; min-width: 2.6em; text-align: center; font-variant-numeric: tabular-nums; font-size: 1.15em; }  /* points */
-  .half i { min-width: 2.2em; text-align: center; font-style: normal; font-size: .8em; opacity: .65;
-            font-variant-numeric: tabular-nums; }
+  .half b { position: relative; min-width: 2.3em; text-align: center; font-variant-numeric: tabular-nums; font-size: 1.15em; }  /* points */
+  .half i { min-width: 1.9em; text-align: center; font-style: normal; font-size: .8em; color: #577373;
+            font-variant-numeric: tabular-nums; }   /* projected points */
   .half.post { background: #C7C7C7; }   /* game finished */
   .half.live { background: #AEC5CF; }   /* game in progress */
   .pos { flex: none; color: #2f6b4f; font-size: .8em; margin-right: 4px; }
