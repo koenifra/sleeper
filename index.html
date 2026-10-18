@@ -10,7 +10,7 @@
   body {
     display: flex; flex-direction: column; padding: 10px 12px;
     font: 400 clamp(10px, 1.55vh, 15px)/1.2 system-ui, sans-serif;  /* scales with window height */
-    background: #EDF7F7; color: #16241b; overflow: hidden;
+    background: #C1D4D4; color: #16241b; overflow: hidden;
   }
 
   /* Header: title + legend on the left, refresh timer exactly in the middle, crown on the right */
@@ -62,10 +62,9 @@
   .r:last-child { border-bottom: 0; }
   .half { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0 6px; border-radius: 4px; }
   .half.b { flex-direction: row-reverse; }  /* mirror: projection and score towards the centre */
-  .half .nm { flex: 1; display: flex; align-items: baseline; min-width: 0; }  /* position | name (shrinks) | number */
+  .half .nm { flex: 1; display: flex; align-items: baseline; min-width: 0; font-size: 1.05em; }  /* position | name (shrinks) | number */
   .half.b .nm { justify-content: flex-end; }
-  .half .nm, .half b { font-size: 1.15em; }  /* player names and points: one size bigger */
-  .half b { position: relative; min-width: 2.6em; text-align: center; font-variant-numeric: tabular-nums; }
+  .half b { position: relative; min-width: 2.6em; text-align: center; font-variant-numeric: tabular-nums; font-size: 1.15em; }  /* points */
   .half i { min-width: 2.2em; text-align: center; font-style: normal; font-size: .8em; opacity: .65;
             font-variant-numeric: tabular-nums; }
   .half.post { background: #C7C7C7; }   /* game finished */
