@@ -79,6 +79,12 @@
   .half.b .d { right: auto; left: -.5em; }   /* mirrored side: badge towards the centre as well */
   .d.neg { color: #c0442b; }
 
+  /* Diagnostics panel, only visible when the page is opened with ?debug */
+  #debug { position: fixed; right: 8px; bottom: 8px; max-width: min(640px, 60vw); margin: 0; padding: 6px 10px;
+           font: 12px/1.35 ui-monospace, Consolas, monospace; white-space: pre-wrap; background: rgba(22, 36, 27, .92);
+           color: #e6ece4; border-radius: 6px; z-index: 10; }
+  #debug[hidden] { display: none; }
+
   /* Small screens: fall back to one scrolling column */
   @media (max-width: 900px) {
     body { overflow: auto; height: auto; }
@@ -107,11 +113,14 @@
   </div>
 </div>
 <div class="grid" id="grid"></div>
+<pre id="debug" hidden></pre>
 
 <script>
 const USER = 'koenifra';
 const LEAGUE_INDEX = 0;             // which of your leagues to show
-const REFRESH_MS = 30000;           // scores and game status refresh interval
+const LEAGUE_ID = '';               // optional: pin a league by its id (shown in ?debug) instead of by index
+const DEBUG = new URLSearchParams(location.search).has('debug');   // open the page with ?debug for lineup diagnostics
+const REFRESH_MS = 30000;           // scores, lineups and game status refresh interval
 const STALE_MS = REFRESH_MS * 2.5;  // timer turns amber when the data is older than this
 const DELTA_HOLD_MS = REFRESH_MS;   // how long a "+x.xx" badge stays visible (raise it to keep badges longer)
 const PROJ_TTL = 600000;            // projections are re-fetched at most every 10 min
@@ -129,6 +138,9 @@ const get = async (u, ms = 15000) => {
     return await r.json();
   } finally { clearTimeout(t); }
 };
+// Adds a changing query string so nothing between you and Sleeper (CDN, proxy) can answer with an old copy.
+// If the timer turns red with HTTP errors after this change, wrap-free calls (without live()) restore the old behaviour.
+const live = u => `${u}${u.includes('?') ? '&' : '?'}_=${Date.now()}`;
 const fmt = n => (n ?? 0).toFixed(2);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
@@ -149,11 +161,11 @@ async function loadPlayers() {
   return d;
 }
 
-// Player id -> projected fantasy points, computed with this league's own scoring settings
-let projCache = { t: 0, d: {} };
+// Player id -> projected fantasy points, computed with this league's own scoring settings (cached per week)
+let projCache = { t: 0, w: null, d: {} };
 async function loadProjections() {
-  if (Date.now() - projCache.t < PROJ_TTL) return projCache.d;
   const { state, league } = ctx;
+  if (projCache.w === state.week && Date.now() - projCache.t < PROJ_TTL) return projCache.d;
   const pos = ['QB', 'RB', 'WR', 'TE', 'K', 'DEF'].map(p => `position[]=${p}`).join('&');
   const rows = await get(`${PROJ_API}/${state.season}/${state.week}?season_type=regular&${pos}`);
   const sc = league.scoring_settings || {}, d = {};
@@ -164,7 +176,7 @@ async function loadProjections() {
     for (const k in sc) pts += (s[k] || 0) * sc[k];
     d[r.player_id] = pts || s.pts_ppr || 0;
   }
-  projCache = { t: Date.now(), d };
+  projCache = { t: Date.now(), w: state.week, d };
   return d;
 }
 
@@ -184,14 +196,14 @@ async function loadGameStates() {
 }
 
 let ctx;               // league context, loaded once
-const lastPts = {};    // "rosterId:playerId" -> points seen at the previous refresh
+let lastPts = {};      // "rosterId:playerId" -> points seen at the previous refresh (current starters only)
 const deltas = {};     // "rosterId:playerId" -> { d: points gained, t: time of the change }
 
 async function init() {
-  const state = await get(`${API}/state/nfl`);
+  const state = await get(live(`${API}/state/nfl`));
   const user = await get(`${API}/user/${USER}`);
   const leagues = await get(`${API}/user/${user.user_id}/leagues/nfl/${state.season}`);
-  const league = leagues[LEAGUE_INDEX];
+  const league = (LEAGUE_ID && leagues.find(l => l.league_id === LEAGUE_ID)) || leagues[LEAGUE_INDEX];
   const [rosters, users, players] = await Promise.all([
     get(`${API}/league/${league.league_id}/rosters`),
     get(`${API}/league/${league.league_id}/users`),
@@ -203,36 +215,72 @@ async function init() {
     const u = users.find(x => x.user_id === r.owner_id);
     names[r.roster_id] = u ? (u.metadata?.team_name || u.display_name) : `Team ${r.roster_id}`;
   }
-  ctx = { state, league, names, players };
-  document.getElementById('title').textContent = `${league.name} - Week ${state.week}`;
+  ctx = { state, league, names, players, userId: user.user_id, week: null };
 }
 
 async function render() {
-  const { state, league, names, players } = ctx;
-  // Projections and game status are optional: if one fails, the page still works without it
-  const [matchups, proj, games] = await Promise.all([
-    get(`${API}/league/${league.league_id}/matchups/${state.week}`),
+  const { league, names, players } = ctx;
+  // Re-read the NFL state on every refresh, so the page follows the week change by itself
+  const state = ctx.state = await get(live(`${API}/state/nfl`));
+  if (ctx.week !== state.week) { lastPts = {}; for (const k in deltas) delete deltas[k]; ctx.week = state.week; }
+  document.getElementById('title').textContent = `${league.name} - Week ${state.week}`;
+
+  // Rosters, projections and game status are optional: if one fails, the page still works without it
+  const [matchups, rosters, proj, games] = await Promise.all([
+    get(live(`${API}/league/${league.league_id}/matchups/${state.week}`)),
+    get(live(`${API}/league/${league.league_id}/rosters`)).catch(e => { console.warn('Rosters unavailable, using matchup lineups:', e); return []; }),
     loadProjections().catch(e => { console.warn('Projections unavailable:', e); return {}; }),
     loadGameStates().catch(e => { console.warn('Game status unavailable:', e); return {}; }),
   ]);
   const now = Date.now();
 
-  // Compare every starter's points with the previous refresh (the first load only records a baseline)
-  for (const m of matchups) (m.starters || []).forEach((pid, i) => {
-    if (pid === '0') return;
-    const k = `${m.roster_id}:${pid}`, v = m.starters_points?.[i] ?? 0;
+  // Lineup source: the roster's current starters, which can show a lineup change sooner than the matchup data.
+  // Points come from players_points; if the rosters call failed, the matchup's own starters are used.
+  const lineups = Object.fromEntries(rosters.map(r => [r.roster_id, r.starters]));
+  for (const m of matchups) {
+    const s = lineups[m.roster_id] || m.starters || [];
+    const pp = m.players_points || {};
+    m.lineup = s;
+    m.lineupPts = s.map(pid => (pid === '0' || !pid) ? 0 : (pp[pid] ?? 0));
+    // If the lineup differs from the matchup data, the matchup total is outdated: sum the starters instead
+    m.total = s.join() === (m.starters || []).join() ? m.points : m.lineupPts.reduce((x, y) => x + y, 0);
+  }
+
+  // Diagnostics (open the page with ?debug): what Sleeper returns for your own lineup, from both endpoints
+  if (DEBUG) {
+    const mine = rosters.find(r => r.owner_id === ctx.userId);
+    const mm = mine && matchups.find(m => m.roster_id === mine.roster_id);
+    const nm = ids => (ids || []).map(id => id === '0' ? '-' : `${players[id]?.[1] || ''} ${players[id]?.[0] || id}`.trim()).join(', ');
+    const dbg = document.getElementById('debug');
+    dbg.hidden = false;
+    dbg.textContent = [
+      `${league.name} (${league.league_id}) - week ${state.week} - fetched ${new Date().toLocaleTimeString()}`,
+      rosters.length ? 'grid uses: rosters endpoint' : 'rosters call FAILED - grid uses matchups endpoint',
+      mine ? `rosters.starters:  ${nm(mine.starters)}` : `no roster found for the owner of "${USER}"`,
+      mm ? `matchups.starters: ${nm(mm.starters)}` : '',
+      mine && mm ? `same lineup in both: ${mine.starters.join() === (mm.starters || []).join() ? 'yes' : 'NO'}` : '',
+    ].filter(Boolean).join('\n');
+  }
+
+  // Compare every starter's points with the previous refresh (the first load only records a baseline).
+  // Only current starters are kept, so a player swapped out and back in later starts with a fresh baseline.
+  const seen = {};
+  for (const m of matchups) m.lineup.forEach((pid, i) => {
+    if (pid === '0' || !pid) return;
+    const k = `${m.roster_id}:${pid}`, v = m.lineupPts[i];
     if (k in lastPts && Math.abs(v - lastPts[k]) > 0.005) deltas[k] = { d: v - lastPts[k], t: now };
-    lastPts[k] = v;
+    seen[k] = v;
   });
+  lastPts = seen;
 
   // Team with the most points this week across the whole league (first team wins a tie);
   // the crown block stays hidden until someone has scored
-  const best = matchups.reduce((x, m) => (!x || m.points > x.points ? m : x), null);
+  const best = matchups.reduce((x, m) => (!x || m.total > x.total ? m : x), null);
   const king = document.getElementById('king');
-  king.hidden = !best || !(best.points > 0);
+  king.hidden = !best || !(best.total > 0);
   if (!king.hidden) {
     document.getElementById('kingName').textContent = names[best.roster_id] || `Team ${best.roster_id}`;
-    document.getElementById('kingPts').textContent = `${fmt(best.points)} pts`;
+    document.getElementById('kingPts').textContent = `${fmt(best.total)} pts`;
   }
 
   // One half of a player row: position, short name + jersey number, actual points (+ gain badge), projection
@@ -258,10 +306,10 @@ async function render() {
   }
 
   // Team projection = sum of projected points of the current starters
-  const teamProj = m => (m.starters || []).reduce((sum, pid) => sum + (proj[pid] || 0), 0);
+  const teamProj = m => m.lineup.reduce((sum, pid) => sum + (proj[pid] || 0), 0);
 
   document.getElementById('grid').innerHTML = [...groups.values()].map(([a, b]) => {
-    b = b || { roster_id: 0, points: 0, starters: [], starters_points: [] };  // bye week fallback
+    b = b || { roster_id: 0, total: 0, lineup: [], lineupPts: [] };  // bye week fallback
     const pa = teamProj(a), pb = teamProj(b);
     // Strictly higher projection gets green; equal (or missing) projections leave both white
     const side = (m, own, other, cls) => `
@@ -270,13 +318,13 @@ async function render() {
           <span class="nm">${esc(names[m.roster_id] || 'Bye')}</span>
           <span class="proj">proj ${own.toFixed(1)}</span>
         </span>
-        <span class="tot">${fmt(m.points)}</span>
+        <span class="tot">${fmt(m.total)}</span>
       </div>`;
 
-    const n = Math.max(a.starters.length, b.starters.length);
+    const n = Math.max(a.lineup.length, b.lineup.length);
     // Rows are aligned by lineup slot, so QB sits next to QB, etc.
     const rows = Array.from({ length: n }, (_, i) =>
-      `<div class="r">${half(a.starters[i], a.starters_points[i], 'a', a.roster_id)}${half(b.starters[i], b.starters_points[i], 'b', b.roster_id)}</div>`
+      `<div class="r">${half(a.lineup[i], a.lineupPts[i], 'a', a.roster_id)}${half(b.lineup[i], b.lineupPts[i], 'b', b.roster_id)}</div>`
     ).join('');
     return `
       <div class="card">
