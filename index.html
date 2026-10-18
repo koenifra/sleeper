@@ -12,14 +12,24 @@
     font: 400 clamp(10px, 1.55vh, 15px)/1.2 system-ui, sans-serif;  /* scales with window height */
     background: #f1f3ec; color: #16241b; overflow: hidden;
   }
-  .topbar { display: flex; align-items: baseline; gap: 16px; margin: 0 0 8px; flex: none; }
+
+  /* Header: title + legend on the left, refresh timer exactly in the middle, crown on the right */
+  .topbar { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center;
+            gap: 16px; margin: 0 0 8px; flex: none; }
+  .left { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 16px; min-width: 0; }
   h1 { margin: 0; font-size: 1.5em; }
   .legend { display: flex; gap: 12px; font-size: .85em; }
   .legend span::before { content: ""; display: inline-block; width: .9em; height: .9em; margin-right: 5px;
                          vertical-align: -.1em; border: 1px solid #b8bdb0; border-radius: 2px; background: var(--c); }
 
+  /* Time since the last successful refresh; turns amber when late and red when the last refresh failed */
+  .timer { font-size: .85em; font-variant-numeric: tabular-nums; white-space: nowrap; padding: 2px 10px;
+           border-radius: 999px; background: #e6e9df; color: #4b5a50; }
+  .timer.stale { background: #f3d9a4; color: #6b4a00; }
+  .timer.err { background: #f0c4bb; color: #8a2a16; }
+
   /* Right side of the header: crown + team with the most points this week */
-  .king { margin-left: auto; align-self: center; display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .king { justify-self: end; display: flex; align-items: center; gap: 8px; min-width: 0; }
   .king[hidden] { display: none; }   /* needed because .king sets display:flex */
   .king img { height: 2.8em; width: auto; flex: none; }
   .king .who { display: flex; flex-direction: column; line-height: 1.15; min-width: 0; }
@@ -33,7 +43,7 @@
   .card { display: flex; flex-direction: column; min-height: 0; background: #fff;
           border: 1px solid #d5dacd; border-radius: 8px; padding: 8px 10px; }
 
-  /* Header: dark frame, one block per team; both blocks are exactly the same width and height */
+  /* Matchup header: dark frame, one block per team; both blocks are exactly the same width and height */
   .head { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 4px; padding: 4px; margin-bottom: 4px;
           background: #26404F; border-radius: 6px; font-weight: 600; flex: none; }
   .side { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; margin: 0;
@@ -52,14 +62,17 @@
   .r:last-child { border-bottom: 0; }
   .half { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0 6px; border-radius: 4px; }
   .half.b { flex-direction: row-reverse; }  /* mirror: projection and score towards the centre */
-  .half.b .nm { text-align: right; }
-  .half .nm { flex: 1; }
+  .half .nm { flex: 1; display: flex; align-items: baseline; min-width: 0; }  /* position | name (shrinks) | number */
+  .half.b .nm { justify-content: flex-end; }
+  .half .nm, .half b { font-size: 1.15em; }  /* player names and points: one size bigger */
   .half b { position: relative; min-width: 2.6em; text-align: center; font-variant-numeric: tabular-nums; }
   .half i { min-width: 2.2em; text-align: center; font-style: normal; font-size: .8em; opacity: .65;
             font-variant-numeric: tabular-nums; }
   .half.post { background: #C7C7C7; }   /* game finished */
   .half.live { background: #AEC5CF; }   /* game in progress */
-  .pos { color: #2f6b4f; font-size: .8em; margin-right: 4px; }
+  .pos { flex: none; color: #2f6b4f; font-size: .8em; margin-right: 4px; }
+  .pn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }   /* only the name gets cut off */
+  .no { flex: none; margin-left: 4px; font-size: .8em; opacity: .65; }
 
   /* Points gained since the last refresh: small badge above the score, so row layout never shifts */
   .d { position: absolute; top: -.55em; right: -.5em; font-style: normal; font-size: .65em; font-weight: 700;
@@ -70,7 +83,8 @@
   /* Small screens: fall back to one scrolling column */
   @media (max-width: 900px) {
     body { overflow: auto; height: auto; }
-    .topbar { flex-wrap: wrap; }
+    .topbar { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+    .timer, .king { justify-self: start; }
     .grid { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
     .r { padding: 5px 0; flex: none; }
   }
@@ -78,12 +92,15 @@
 </head>
 <body>
 <div class="topbar">
-  <h1 id="title">Matchups</h1>
-  <div class="legend">
-    <span style="--c:#AEC5CF">Live</span>
-    <span style="--c:#C7C7C7">Finished</span>
-    <span style="--c:#A5BA86">Higher projection</span>
+  <div class="left">
+    <h1 id="title">Matchups</h1>
+    <div class="legend">
+      <span style="--c:#AEC5CF">Live</span>
+      <span style="--c:#C7C7C7">Finished</span>
+      <span style="--c:#A5BA86">Higher projection</span>
+    </div>
   </div>
+  <div class="timer" id="timer">Loading...</div>
   <!-- crown.png must sit in the same folder as this file -->
   <div class="king" id="king" hidden>
     <img src="crown.png" alt="">
@@ -96,23 +113,40 @@
 const USER = 'koenifra';
 const LEAGUE_INDEX = 0;             // which of your leagues to show
 const REFRESH_MS = 30000;           // scores and game status refresh interval
+const STALE_MS = REFRESH_MS * 2.5;  // timer turns amber when the data is older than this
 const DELTA_HOLD_MS = REFRESH_MS;   // how long a "+x.xx" badge stays visible (raise it to keep badges longer)
 const PROJ_TTL = 600000;            // projections are re-fetched at most every 10 min
 const API = 'https://api.sleeper.app/v1';
 const PROJ_API = 'https://api.sleeper.com/projections/nfl';  // undocumented endpoint, different domain
 const ESPN = 'https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard';  // unofficial, used for live game status
 const ESPN_FIX = { WSH: 'WAS' };  // ESPN abbreviation -> Sleeper abbreviation
-const get = async u => { const r = await fetch(u); if (!r.ok) throw new Error(`HTTP ${r.status} for ${u}`); return r.json(); };
+
+// fetch JSON: never use the browser cache, and give up after `ms` so a hung request cannot block refreshes
+const get = async (u, ms = 15000) => {
+  const ac = new AbortController(), t = setTimeout(() => ac.abort(), ms);
+  try {
+    const r = await fetch(u, { cache: 'no-store', signal: ac.signal });
+    if (!r.ok) throw new Error(`HTTP ${r.status} for ${u}`);
+    return await r.json();
+  } finally { clearTimeout(t); }
+};
 const fmt = n => (n ?? 0).toFixed(2);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-// Player id -> [name, position, team]; cached for 24 h (the full dump is ~5 MB)
+// "Josh Allen" -> "J. Allen"; defenses keep their full name (e.g. "Buffalo Bills")
+const shortName = (id, p) => {
+  if (p.position === 'DEF') return `${p.first_name || ''} ${p.last_name || ''}`.trim() || p.full_name || id;
+  const f = (p.first_name || '').trim(), l = (p.last_name || '').trim();
+  return f && l ? `${f[0]}. ${l}` : (p.full_name || l || f || id);
+};
+
+// Player id -> [short name, position, team, jersey number]; cached for 24 h (the full dump is ~5 MB)
 async function loadPlayers() {
-  try { const c = JSON.parse(localStorage.getItem('sl_players2')); if (c && Date.now() - c.t < 864e5) return c.d; } catch {}
-  const raw = await get(`${API}/players/nfl`), d = {};
+  try { const c = JSON.parse(localStorage.getItem('sl_players3')); if (c && Date.now() - c.t < 864e5) return c.d; } catch {}
+  const raw = await get(`${API}/players/nfl`, 60000), d = {};
   for (const [id, p] of Object.entries(raw))
-    d[id] = [p.full_name || `${p.first_name || ''} ${p.last_name || ''}`.trim() || id, p.position || '', p.team || (p.position === 'DEF' ? id : '')];
-  try { localStorage.setItem('sl_players2', JSON.stringify({ t: Date.now(), d })); } catch {}
+    d[id] = [shortName(id, p), p.position || '', p.team || (p.position === 'DEF' ? id : ''), p.number ?? ''];
+  try { localStorage.setItem('sl_players3', JSON.stringify({ t: Date.now(), d })); } catch {}
   return d;
 }
 
@@ -202,17 +236,17 @@ async function render() {
     document.getElementById('kingPts').textContent = `${fmt(best.points)} pts`;
   }
 
-  // One half of a player row: name, actual points (+ gain badge), projected points; coloured by game status
+  // One half of a player row: position, short name + jersey number, actual points (+ gain badge), projection
   const half = (pid, pts, cls, rid) => {
     if (!pid || pid === '0') return `<div class="half ${cls}"><span class="nm">-</span></div>`;
-    const [name, pos, team] = players[pid] || [pid, '', ''];
+    const [name, pos, team, num] = players[pid] || [pid, '', '', ''];
     const st = games[team] === 'post' ? 'post' : games[team] === 'in' ? 'live' : '';
     const pj = proj[pid];
     const dl = deltas[`${rid}:${pid}`];
     const badge = dl && now - dl.t < DELTA_HOLD_MS
       ? `<em class="d ${dl.d < 0 ? 'neg' : ''}">${dl.d > 0 ? '+' : ''}${dl.d.toFixed(2)}</em>` : '';
     return `<div class="half ${cls} ${st}">
-      <span class="nm"><span class="pos">${esc(pos)}</span>${esc(name)}</span>
+      <span class="nm"><span class="pos">${esc(pos)}</span><span class="pn">${esc(name)}</span>${num !== '' ? `<span class="no">#${esc(num)}</span>` : ''}</span>
       <b>${fmt(pts)}${badge}</b><i>${pj != null ? pj.toFixed(1) : '-'}</i>
     </div>`;
   };
@@ -252,9 +286,41 @@ async function render() {
   }).join('');
 }
 
-init().then(render).then(() => setInterval(() => render().catch(console.error), REFRESH_MS)).catch(e => {
-  document.getElementById('grid').textContent = e.message;
-});
+// ---- Refresh loop and timer ----
+let lastOk = 0;     // time of the last successful refresh
+let lastErr = '';   // message of the last failed refresh ('' = last one worked)
+let busy = false;   // prevents overlapping refreshes
+const timerEl = document.getElementById('timer');
+
+async function refresh() {
+  if (busy) return;
+  busy = true;
+  try {
+    if (!ctx) await init();   // if the first load failed, retry it here
+    await render();
+    lastOk = Date.now(); lastErr = '';
+  } catch (e) {
+    lastErr = e.name === 'AbortError' ? 'Request timed out' : (e.message || String(e));
+    console.error(e);
+    if (!lastOk) document.getElementById('grid').textContent = lastErr;   // nothing shown yet
+  } finally { busy = false; tick(); }
+}
+
+// Updates the timer text every second: "Updated 12 s ago", amber when late, red when the last refresh failed
+function tick() {
+  if (!lastOk) { timerEl.textContent = lastErr ? 'Load failed - retrying' : 'Loading...'; timerEl.className = 'timer' + (lastErr ? ' err' : ''); return; }
+  const ms = Date.now() - lastOk, s = Math.floor(ms / 1000);
+  const t = s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, '0')} s`;
+  timerEl.textContent = lastErr ? `Update failed - last OK ${t} ago` : `Updated ${t} ago`;
+  timerEl.className = 'timer' + (lastErr ? ' err' : ms > STALE_MS ? ' stale' : '');
+  timerEl.title = lastErr;   // hover shows the error message
+}
+
+refresh();
+setInterval(refresh, REFRESH_MS);
+setInterval(tick, 1000);
+// Browsers (and the Fire TV) pause timers while the screen is off: refresh right away when the page comes back
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 </script>
 </body>
 </html>
