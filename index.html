@@ -38,6 +38,9 @@
   .king .who b { font-size: 1.15em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .king .who span { font-size: .85em; opacity: .75; font-variant-numeric: tabular-nums; }
 
+  /* Small team logo in front of a team name (49ers logo for the NINERS_USER team); overrides the crown image size */
+  .logo, .king img.logo { height: 1.1em; width: auto; flex: none; vertical-align: -.2em; margin-right: 5px; }
+
   /* 3 columns x 2 rows, filling the remaining viewport height */
   .grid { flex: 1; min-height: 0; display: grid; gap: 10px;
           grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); }
@@ -127,6 +130,8 @@
 const USER = 'koenifra';
 const LEAGUE_INDEX = 0;             // which of your leagues to show
 const LEAGUE_ID = '';               // optional: pin a league by its id (shown in ?debug) instead of by index
+const NINERS_USER = 'StheG';        // Sleeper username (or display name) of the team that gets the 49ers logo
+const NINERS_LOGO = 'https://a.espncdn.com/i/teamlogos/nfl/500/scoreboard/sf.png';   // hosted by ESPN, needs internet
 const DEBUG = new URLSearchParams(location.search).has('debug');   // open the page with ?debug for lineup diagnostics
 const REFRESH_MS = 30000;           // scores, lineups, game status and possession refresh interval
 const STALE_MS = REFRESH_MS * 2.5;  // timer turns amber when the data is older than this
@@ -222,17 +227,22 @@ async function init() {
     get(`${API}/league/${league.league_id}/users`),
     loadPlayers(),
   ]);
-  // roster_id -> team name
-  const names = {};
+  // roster_id -> team name; also collect the roster(s) owned by NINERS_USER (matched on username or display name)
+  const names = {}, niners = new Set(), want = NINERS_USER.toLowerCase();
   for (const r of rosters) {
     const u = users.find(x => x.user_id === r.owner_id);
     names[r.roster_id] = u ? (u.metadata?.team_name || u.display_name) : `Team ${r.roster_id}`;
+    if (u && [u.username, u.display_name].some(n => (n || '').toLowerCase() === want)) niners.add(r.roster_id);
   }
-  ctx = { state, league, names, players, userId: user.user_id, week: null };
+  ctx = { state, league, names, niners, players, userId: user.user_id, week: null };
 }
 
 async function render() {
-  const { league, names, players } = ctx;
+  const { league, names, niners, players } = ctx;
+  // Team name as HTML; the 49ers logo goes in front of the team owned by NINERS_USER (it removes itself if it cannot load)
+  const label = rid => (niners.has(rid) ? `<img class="logo" src="${NINERS_LOGO}" alt="" onerror="this.remove()">` : '')
+    + esc(names[rid] || (rid ? `Team ${rid}` : 'Bye'));
+
   // Re-read the NFL state on every refresh, so the page follows the week change by itself
   const state = ctx.state = await get(live(`${API}/state/nfl`));
   if (ctx.week !== state.week) { lastPts = {}; for (const k in deltas) delete deltas[k]; ctx.week = state.week; }
@@ -274,6 +284,7 @@ async function render() {
       mm ? `matchups.starters: ${nm(mm.starters)}` : '',
       mine && mm ? `same lineup in both: ${mine.starters.join() === (mm.starters || []).join() ? 'yes' : 'NO'}` : '',
       `teams with the ball (ESPN): ${[...ball].join(', ') || '-'}`,
+      `49ers logo team: ${[...niners].map(r => names[r]).join(', ') || `no user "${NINERS_USER}" found in this league`}`,
     ].filter(Boolean).join('\n');
   }
 
@@ -294,7 +305,7 @@ async function render() {
   const king = document.getElementById('king');
   king.hidden = !best || !(best.total > 0);
   if (!king.hidden) {
-    document.getElementById('kingName').textContent = names[best.roster_id] || `Team ${best.roster_id}`;
+    document.getElementById('kingName').innerHTML = label(best.roster_id);
     document.getElementById('kingPts').textContent = `${fmt(best.total)} pts`;
   }
 
@@ -339,7 +350,7 @@ async function render() {
     const side = (m, own, other, cls) => `
       <div class="side ${cls} ${own > other ? 'lead' : ''}">
         <span class="info">
-          <span class="nm">${esc(names[m.roster_id] || 'Bye')}</span>
+          <span class="nm">${label(m.roster_id)}</span>
           <span class="proj">proj ${own.toFixed(1)}</span>
         </span>
         <span class="tot">${fmt(m.total)}</span>
