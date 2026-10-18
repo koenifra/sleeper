@@ -21,6 +21,8 @@
   .legend { display: flex; gap: 12px; font-size: .85em; }
   .legend span::before { content: ""; display: inline-block; width: .9em; height: .9em; margin-right: 5px;
                          vertical-align: -.1em; border: 1px solid #b8bdb0; border-radius: 2px; background: var(--c); }
+  .legend .ball::before { width: 1em; height: .6em; border: 0; border-radius: 50%; background: #7a4a21;
+                          transform: rotate(-25deg); vertical-align: .05em; }   /* legend entry for the football marker */
 
   /* Time since the last successful refresh; turns amber when late and red when the last refresh failed */
   .timer { font-size: .85em; font-variant-numeric: tabular-nums; white-space: nowrap; padding: 2px 10px;
@@ -62,7 +64,7 @@
   .r:last-child { border-bottom: 0; }
   .half { display: flex; align-items: center; gap: 4px; min-width: 0; padding: 0 6px; border-radius: 4px; }
   .half.b { flex-direction: row-reverse; }  /* mirror: projection and score towards the centre */
-  .half .nm { flex: 1; display: flex; align-items: baseline; min-width: 0; font-size: 1.05em; }  /* position | name (shrinks) | number */
+  .half .nm { flex: 1; display: flex; align-items: baseline; min-width: 0; font-size: 1.05em; }  /* position | name (shrinks) | number | ball */
   .half.b .nm { justify-content: flex-end; }
   .half b { position: relative; min-width: 2.3em; text-align: center; font-variant-numeric: tabular-nums; font-size: 1.15em; }  /* points */
   .half i { min-width: 1.9em; text-align: center; font-style: normal; font-size: .8em; color: #577373;
@@ -72,6 +74,11 @@
   .pos { flex: none; color: #2f6b4f; font-size: .8em; margin-right: 4px; }
   .pn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }   /* only the name gets cut off */
   .no { flex: none; margin-left: 4px; font-size: .8em; opacity: .65; }
+
+  /* Football marker: the player's team currently has possession (small brown ellipse with a white lace) */
+  .fb { position: relative; flex: none; align-self: center; width: .95em; height: .6em; margin-left: 5px;
+        border-radius: 50%; background: #7a4a21; transform: rotate(-25deg); box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .25); }
+  .fb::after { content: ""; position: absolute; left: 24%; right: 24%; top: 50%; height: 1px; background: #fff; }
 
   /* Points gained since the last refresh: small badge above the score, so row layout never shifts */
   .d { position: absolute; top: -.55em; right: -.5em; font-style: normal; font-size: .65em; font-weight: 700;
@@ -103,6 +110,7 @@
       <span style="--c:#AEC5CF">Live</span>
       <span style="--c:#C7C7C7">Finished</span>
       <span style="--c:#A5BA86">Higher projection</span>
+      <span class="ball">On offense</span>
     </div>
   </div>
   <div class="timer" id="timer">Loading...</div>
@@ -120,13 +128,13 @@ const USER = 'koenifra';
 const LEAGUE_INDEX = 0;             // which of your leagues to show
 const LEAGUE_ID = '';               // optional: pin a league by its id (shown in ?debug) instead of by index
 const DEBUG = new URLSearchParams(location.search).has('debug');   // open the page with ?debug for lineup diagnostics
-const REFRESH_MS = 30000;           // scores, lineups and game status refresh interval
+const REFRESH_MS = 30000;           // scores, lineups, game status and possession refresh interval
 const STALE_MS = REFRESH_MS * 2.5;  // timer turns amber when the data is older than this
 const DELTA_HOLD_MS = REFRESH_MS;   // how long a "+x.xx" badge stays visible (raise it to keep badges longer)
 const PROJ_TTL = 600000;            // projections are re-fetched at most every 10 min
 const API = 'https://api.sleeper.app/v1';
 const PROJ_API = 'https://api.sleeper.com/projections/nfl';  // undocumented endpoint, different domain
-const ESPN = 'https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard';  // unofficial, used for live game status
+const ESPN = 'https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard';  // unofficial, used for live game status and possession
 const ESPN_FIX = { WSH: 'WAS' };  // ESPN abbreviation -> Sleeper abbreviation
 
 // fetch JSON: never use the browser cache, and give up after `ms` so a hung request cannot block refreshes
@@ -180,20 +188,24 @@ async function loadProjections() {
   return d;
 }
 
-// NFL team abbreviation -> game state: 'pre' (not started), 'in' (live) or 'post' (finished)
-let gamesCache = {};   // last successful result, reused if a later request fails
+// NFL team abbreviation -> game state ('pre' not started, 'in' live, 'post' finished),
+// plus the set of teams that currently have the ball
+let gamesCache = { games: {}, ball: new Set() };   // last successful result, reused (without possession) if a later request fails
 async function loadGameStates() {
   const type = { pre: 1, regular: 2, post: 3 }[ctx.state.season_type] || 2;
   const data = await get(`${ESPN}?week=${ctx.state.week}&seasontype=${type}`);
-  const out = {};
+  const games = {}, ball = new Set(), fix = ab => ESPN_FIX[ab] || ab;
   for (const ev of data.events || []) {
-    const st = ev.status?.type?.state;
-    for (const c of ev.competitions?.[0]?.competitors || []) {
-      const ab = c.team?.abbreviation;
-      if (ab) out[ESPN_FIX[ab] || ab] = st;
+    const comp = ev.competitions?.[0], st = ev.status?.type?.state, teams = comp?.competitors || [];
+    for (const c of teams) if (c.team?.abbreviation) games[fix(c.team.abbreviation)] = st;
+    // situation.possession is the ESPN id of the team with the ball; only used while the game is live and not at halftime
+    const pid = comp?.situation?.possession;
+    if (pid && st === 'in' && ev.status?.type?.name !== 'STATUS_HALFTIME') {
+      const holder = teams.find(c => String(c.team?.id) === String(pid));
+      if (holder?.team?.abbreviation) ball.add(fix(holder.team.abbreviation));
     }
   }
-  return (gamesCache = out);
+  return (gamesCache = { games, ball });
 }
 
 let ctx;               // league context, loaded once
@@ -227,12 +239,13 @@ async function render() {
   document.getElementById('title').textContent = `${league.name} - Week ${state.week}`;
 
   // Rosters, projections and game status are optional: if one fails, the last known data (or the matchup lineups) is used
-  const [matchups, rosters, proj, games] = await Promise.all([
+  const [matchups, rosters, proj, gm] = await Promise.all([
     get(live(`${API}/league/${league.league_id}/matchups/${state.week}`)),
     get(live(`${API}/league/${league.league_id}/rosters`)).catch(e => { console.warn('Rosters unavailable, using matchup lineups:', e); return []; }),
     loadProjections().catch(e => { console.warn('Projections unavailable, using last known:', e); return projCache.d; }),
-    loadGameStates().catch(e => { console.warn('Game status unavailable, using last known:', e); return gamesCache; }),
+    loadGameStates().catch(e => { console.warn('Game status unavailable, using last known:', e); return { games: gamesCache.games, ball: new Set() }; }),
   ]);
+  const { games, ball } = gm;
   const now = Date.now();
 
   // Lineup source: the roster's current starters, which can show a lineup change sooner than the matchup data.
@@ -260,6 +273,7 @@ async function render() {
       mine ? `rosters.starters:  ${nm(mine.starters)}` : `no roster found for the owner of "${USER}"`,
       mm ? `matchups.starters: ${nm(mm.starters)}` : '',
       mine && mm ? `same lineup in both: ${mine.starters.join() === (mm.starters || []).join() ? 'yes' : 'NO'}` : '',
+      `teams with the ball (ESPN): ${[...ball].join(', ') || '-'}`,
     ].filter(Boolean).join('\n');
   }
 
@@ -284,17 +298,19 @@ async function render() {
     document.getElementById('kingPts').textContent = `${fmt(best.total)} pts`;
   }
 
-  // One half of a player row: position, short name + jersey number, actual points (+ gain badge), projection
+  // One half of a player row: position, short name + jersey number (+ football if his team has the ball),
+  // actual points (+ gain badge), projection
   const half = (pid, pts, cls, rid) => {
     if (!pid || pid === '0') return `<div class="half ${cls}"><span class="nm">-</span></div>`;
     const [name, pos, team, num] = players[pid] || [pid, '', '', ''];
     const st = games[team] === 'post' ? 'post' : games[team] === 'in' ? 'live' : '';
+    const hasBall = ball.has(team) && pos !== 'DEF';   // a team defense is off the field while its team has the ball
     const pj = proj[pid];
     const dl = deltas[`${rid}:${pid}`];
     const badge = dl && now - dl.t < DELTA_HOLD_MS
       ? `<em class="d ${dl.d < 0 ? 'neg' : ''}">${dl.d > 0 ? '+' : ''}${dl.d.toFixed(2)}</em>` : '';
     return `<div class="half ${cls} ${st}">
-      <span class="nm"><span class="pos">${esc(pos)}</span><span class="pn">${esc(name)}</span>${num !== '' ? `<span class="no">#${esc(num)}</span>` : ''}</span>
+      <span class="nm"><span class="pos">${esc(pos)}</span><span class="pn">${esc(name)}</span>${num !== '' ? `<span class="no">#${esc(num)}</span>` : ''}${hasBall ? '<span class="fb" title="On offense"></span>' : ''}</span>
       <b>${fmt(pts)}${badge}</b><i>${pj != null ? pj.toFixed(1) : '-'}</i>
     </div>`;
   };
