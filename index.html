@@ -48,7 +48,7 @@
           background: #26404F; border-radius: 6px; font-weight: 600; flex: none; }
   .side { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; margin: 0;
           padding: 3px 8px; border-radius: 4px; background: #fff; }
-  .side.lead { background: #A5BA86; }       /* higher projected points */
+  .side.lead { background: #A5BA86; }       /* higher projected final points */
   .side.b { flex-direction: row-reverse; }  /* mirror: score left, name right */
   .side.b .info { text-align: right; }
   .info { display: flex; flex-direction: column; min-width: 0; }
@@ -181,6 +181,7 @@ async function loadProjections() {
 }
 
 // NFL team abbreviation -> game state: 'pre' (not started), 'in' (live) or 'post' (finished)
+let gamesCache = {};   // last successful result, reused if a later request fails
 async function loadGameStates() {
   const type = { pre: 1, regular: 2, post: 3 }[ctx.state.season_type] || 2;
   const data = await get(`${ESPN}?week=${ctx.state.week}&seasontype=${type}`);
@@ -192,7 +193,7 @@ async function loadGameStates() {
       if (ab) out[ESPN_FIX[ab] || ab] = st;
     }
   }
-  return out;
+  return (gamesCache = out);
 }
 
 let ctx;               // league context, loaded once
@@ -225,12 +226,12 @@ async function render() {
   if (ctx.week !== state.week) { lastPts = {}; for (const k in deltas) delete deltas[k]; ctx.week = state.week; }
   document.getElementById('title').textContent = `${league.name} - Week ${state.week}`;
 
-  // Rosters, projections and game status are optional: if one fails, the page still works without it
+  // Rosters, projections and game status are optional: if one fails, the last known data (or the matchup lineups) is used
   const [matchups, rosters, proj, games] = await Promise.all([
     get(live(`${API}/league/${league.league_id}/matchups/${state.week}`)),
     get(live(`${API}/league/${league.league_id}/rosters`)).catch(e => { console.warn('Rosters unavailable, using matchup lineups:', e); return []; }),
-    loadProjections().catch(e => { console.warn('Projections unavailable:', e); return {}; }),
-    loadGameStates().catch(e => { console.warn('Game status unavailable:', e); return {}; }),
+    loadProjections().catch(e => { console.warn('Projections unavailable, using last known:', e); return projCache.d; }),
+    loadGameStates().catch(e => { console.warn('Game status unavailable, using last known:', e); return gamesCache; }),
   ]);
   const now = Date.now();
 
@@ -305,8 +306,15 @@ async function render() {
     groups.get(m.matchup_id).push(m);
   }
 
-  // Team projection = sum of projected points of the current starters
-  const teamProj = m => m.lineup.reduce((sum, pid) => sum + (proj[pid] || 0), 0);
+  // Expected final points of one starter, updated as the games are played:
+  //   finished game -> the actual points;  live game (or already scored) -> the higher of actual and projection;
+  //   game not started -> the projection
+  const expected = (pid, pts) => {
+    const pj = proj[pid] || 0, st = games[players[pid]?.[2]];
+    return st === 'post' ? pts : (st === 'in' || pts > 0) ? Math.max(pts, pj) : pj;
+  };
+  // Team projection = sum of the expected final points of the current starters
+  const teamProj = m => m.lineup.reduce((sum, pid, i) => (pid && pid !== '0') ? sum + expected(pid, m.lineupPts[i]) : sum, 0);
 
   document.getElementById('grid').innerHTML = [...groups.values()].map(([a, b]) => {
     b = b || { roster_id: 0, total: 0, lineup: [], lineupPts: [] };  // bye week fallback
